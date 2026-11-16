@@ -1,44 +1,86 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
 
-import { NewAppScreen } from '@react-native/new-app-screen';
-import { StatusBar, StyleSheet, useColorScheme, View } from 'react-native';
+import React, { useState, useEffect } from 'react';
+
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+
 import {
-  SafeAreaProvider,
-  useSafeAreaInsets,
-} from 'react-native-safe-area-context';
+  View,
+  Text,
+  StyleSheet,
+} from 'react-native';
+
+import AppNavigator from './src/navigation/AppNavigator';
+
+import { initializeDatabase } from './src/database/database';
+import colors from './src/theme/colors';
+
+import BootSplash from 'react-native-bootsplash';
+import PocketSplashLoader from './src/compornet/common/PocketSplashLoader';
 
 function App() {
-  const isDarkMode = useColorScheme() === 'dark';
+  const [dbReady, setDbReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const startApp = async () => {
+      try {
+        await initializeDatabase();
+        setDbReady(true);
+      } catch (err) {
+        console.error('Database initialization error:', err);
+
+        setError(
+          'Database initialization failed. Please restart the app.',
+        );
+      } finally {
+        await BootSplash.hide({ fade: true });
+      }
+    };
+
+    startApp();
+  }, []);
 
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <AppContent />
+      {error ? (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorTitle}>
+            PocketManager
+          </Text>
+
+          <Text style={styles.errorText}>
+            {error}
+          </Text>
+        </View>
+      ) : !dbReady ? (
+        <PocketSplashLoader />
+      ) : (
+        <AppNavigator />
+      )}
     </SafeAreaProvider>
   );
 }
 
-function AppContent() {
-  const safeAreaInsets = useSafeAreaInsets();
-
-  return (
-    <View style={styles.container}>
-      <NewAppScreen
-        templateFileName="App.tsx"
-        safeAreaInsets={safeAreaInsets}
-      />
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  container: {
+  errorContainer: {
     flex: 1,
+    backgroundColor: colors.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+
+  errorTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: colors.primaryLight,
+    marginBottom: 16,
+  },
+
+  errorText: {
+    color: colors.danger,
+    fontSize: 15,
+    textAlign: 'center',
   },
 });
 
