@@ -8,6 +8,7 @@ import {
   ScrollView,
   StatusBar,
   Pressable,
+  ActivityIndicator,
 } from 'react-native';
 
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -21,7 +22,9 @@ import {
 import {
   useFocusEffect,
   useNavigation,
+  useRoute,
   CompositeNavigationProp,
+  RouteProp,
 } from '@react-navigation/native';
 
 import {
@@ -56,8 +59,18 @@ type HomeNavigationProp = CompositeNavigationProp<
   NativeStackNavigationProp<RootStackParamList>
 >;
 
+type HomeRouteProp = RouteProp<RootTabParamList, 'Home'>;
+
+const formatMoney = (amount: number): string => {
+  return `Rs. ${amount.toLocaleString('en-LK', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+};
+
 export default function Home() {
   const navigation = useNavigation<HomeNavigationProp>();
+  const route = useRoute<HomeRouteProp>();
 
   const [summary, setSummary] = useState<DashboardSummary>({
     totalIncome: 0,
@@ -65,25 +78,65 @@ export default function Home() {
     balance: 0,
   });
 
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
   const month = new Date().toLocaleDateString('en-US', {
     month: 'long',
     year: 'numeric',
   });
 
+  // Load dashboard information from SQLite.
   const loadDashboard = useCallback(async () => {
     try {
+      setRefreshing(true);
+
       const data = await getDashboardSummary();
 
-      setSummary(data);
+      setSummary({
+        totalIncome: Number(data.totalIncome) || 0,
+        totalExpense: Number(data.totalExpense) || 0,
+        balance: Number(data.balance) || 0,
+      });
     } catch (error) {
-      console.log('Dashboard loading error:', error);
+      console.error('Dashboard loading error:', error);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
+  // Reload whenever Home receives focus or a refresh signal.
   useFocusEffect(
     useCallback(() => {
-      loadDashboard();
-    }, [loadDashboard]),
+      let active = true;
+
+      const refresh = async () => {
+        try {
+          const data = await getDashboardSummary();
+
+          if (active) {
+            setSummary({
+              totalIncome: Number(data.totalIncome) || 0,
+              totalExpense: Number(data.totalExpense) || 0,
+              balance: Number(data.balance) || 0,
+            });
+          }
+        } catch (error) {
+          console.error('Dashboard refresh error:', error);
+        } finally {
+          if (active) {
+            setLoading(false);
+          }
+        }
+      };
+
+      refresh();
+
+      return () => {
+        active = false;
+      };
+    }, [route.params?.refreshKey]),
   );
 
   const handleToolNavigation = (
@@ -100,18 +153,12 @@ export default function Home() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar
-
-      //me than err enawa
-        // backgroundColor={colors.background}
-        barStyle="light-content"
-      />
+      <StatusBar barStyle="light-content" />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-
         {/* Dashboard Header */}
 
         <View style={styles.header}>
@@ -126,14 +173,9 @@ export default function Home() {
           </View>
 
           <View style={styles.headerActions}>
-
-            {/* Notification Button */}
-
             <Pressable
               style={styles.notification}
-              onPress={() => {
-                // Notification screen can be added later
-              }}
+              onPress={() => { }}
             >
               <Bell
                 size={21}
@@ -143,12 +185,9 @@ export default function Home() {
               <View style={styles.dot} />
             </Pressable>
 
-            {/* Dashboard Tools Menu */}
-
             <DashboardMenu
               onNavigate={handleToolNavigation}
             />
-
           </View>
         </View>
 
@@ -165,46 +204,61 @@ export default function Home() {
           </Text>
         </View>
 
-        {/* Balance Card */}
+        {/* All-time Balance */}
 
         <View style={styles.balanceContainer}>
           <BalanceCard />
         </View>
 
-        {/* Income and Expense Summary */}
+        {/* Monthly Income and Expenses */}
 
         <View style={styles.summaryRow}>
-
-          <SummaryCard
-            title="Income"
-            amount={`Rs. ${summary.totalIncome.toLocaleString('en-US')}`}
-            type="income"
-            icon={
-              <ChevronRight
-                size={19}
-                color="#22C55E"
+          {loading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator
+                color={colors.primaryLight}
               />
-            }
-          />
-
-          <SummaryCard
-            title="Expenses"
-            amount={`Rs. ${summary.totalExpense.toLocaleString('en-US')}`}
-            type="expense"
-            icon={
-              <ChevronRight
-                size={19}
-                color="#EF4444"
+            </View>
+          ) : (
+            <>
+              <SummaryCard
+                title="Income"
+                amount={formatMoney(summary.totalIncome)}
+                type="income"
+                icon={
+                  <ChevronRight
+                    size={19}
+                    color="#22C55E"
+                  />
+                }
               />
-            }
-          />
 
+              <SummaryCard
+                title="Expenses"
+                amount={formatMoney(summary.totalExpense)}
+                type="expense"
+                icon={
+                  <ChevronRight
+                    size={19}
+                    color="#EF4444"
+                  />
+                }
+              />
+            </>
+          )}
         </View>
+
+        {/* Refresh Indicator */}
+
+        {refreshing && (
+          <Text style={styles.refreshText}>
+            Updating financial information...
+          </Text>
+        )}
 
         {/* Quick Actions */}
 
         <View style={styles.section}>
-
           <Text style={styles.sectionTitle}>
             Quick Actions
           </Text>
@@ -212,15 +266,12 @@ export default function Home() {
           <QuickActions
             onAction={handleAddTransaction}
           />
-
         </View>
 
         {/* Recent Transactions */}
 
         <View style={styles.section}>
-
           <View style={styles.sectionHeader}>
-
             <Text style={styles.sectionTitle}>
               Recent Transactions
             </Text>
@@ -234,14 +285,10 @@ export default function Home() {
                 See All
               </Text>
             </Pressable>
-
           </View>
 
           <RecentTransactions />
-
         </View>
-
-       
 
       </ScrollView>
     </SafeAreaView>
@@ -249,7 +296,6 @@ export default function Home() {
 }
 
 const styles = StyleSheet.create({
-
   container: {
     flex: 1,
     backgroundColor: colors.background,
@@ -326,6 +372,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
     marginTop: 18,
+    minHeight: 110,
+  },
+
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    minHeight: 110,
+  },
+
+  refreshText: {
+    color: colors.textMuted,
+    fontSize: 10,
+    textAlign: 'center',
+    marginTop: 8,
   },
 
   section: {
@@ -349,15 +412,4 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-
-  footer: {
-    alignItems: 'center',
-    marginTop: 30,
-  },
-
-  footerText: {
-    color: colors.textMuted,
-    fontSize: 10,
-  },
-
 });

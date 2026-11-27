@@ -1,5 +1,5 @@
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 
 import {
   View,
@@ -7,6 +7,8 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
+
+import { useFocusEffect } from '@react-navigation/native';
 
 import {
   ShoppingCart,
@@ -26,32 +28,55 @@ export default function RecentTransactions() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const loadTransactions = async () => {
-      try {
-        const data = await getRecentTransactions(5);
-        setTransactions(data);
-      } catch (error) {
-        console.log('Recent transactions error:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
+  // Reload transactions every time Home becomes active.
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
 
-    loadTransactions();
-  }, []);
+      const loadTransactions = async () => {
+        try {
+          setLoading(true);
+
+          const data = await getRecentTransactions(5);
+
+          if (active) {
+            setTransactions(data);
+          }
+        } catch (error) {
+          console.error('Recent transactions error:', error);
+        } finally {
+          if (active) {
+            setLoading(false);
+          }
+        }
+      };
+
+      loadTransactions();
+
+      return () => {
+        active = false;
+      };
+    }, []),
+  );
 
   const formatDate = (date: string) => {
-    const parsedDate = new Date(`${date}T00:00:00`);
+    const parsed = new Date(`${date}T00:00:00`);
 
-    if (Number.isNaN(parsedDate.getTime())) {
+    if (Number.isNaN(parsed.getTime())) {
       return date;
     }
 
-    return parsedDate.toLocaleDateString('en-US', {
+    return parsed.toLocaleDateString('en-US', {
       day: 'numeric',
       month: 'short',
       year: 'numeric',
+    });
+  };
+
+  const formatMoney = (amount: number) => {
+    return amount.toLocaleString('en-LK', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
     });
   };
 
@@ -66,8 +91,12 @@ export default function RecentTransactions() {
       return Car;
     }
 
-    if (name.includes('food') || name.includes('breakfast') ||
-        name.includes('lunch') || name.includes('dinner')) {
+    if (
+      name.includes('food') ||
+      name.includes('breakfast') ||
+      name.includes('lunch') ||
+      name.includes('dinner')
+    ) {
       return Coffee;
     }
 
@@ -78,6 +107,9 @@ export default function RecentTransactions() {
     return (
       <View style={styles.emptyContainer}>
         <ActivityIndicator color={colors.primaryLight} />
+        <Text style={styles.emptySubtitle}>
+          Loading transactions...
+        </Text>
       </View>
     );
   }
@@ -86,7 +118,11 @@ export default function RecentTransactions() {
     return (
       <View style={styles.emptyContainer}>
         <Wallet size={28} color={colors.textMuted} />
-        <Text style={styles.emptyTitle}>No transactions yet</Text>
+
+        <Text style={styles.emptyTitle}>
+          No transactions yet
+        </Text>
+
         <Text style={styles.emptySubtitle}>
           Your transactions will appear here.
         </Text>
@@ -96,7 +132,7 @@ export default function RecentTransactions() {
 
   return (
     <View style={styles.container}>
-      {transactions.map((item) => {
+      {transactions.map(item => {
         const Icon = getIcon(item.category_name);
         const isIncome = item.type === 'income';
 
@@ -116,7 +152,9 @@ export default function RecentTransactions() {
                 </Text>
 
                 <Text style={styles.subtitle}>
-                  {item.category_name ?? 'Uncategorized'} • {formatDate(item.date)}
+                  {item.category_name ?? 'Uncategorized'}
+                  {' • '}
+                  {formatDate(item.date)}
                 </Text>
               </View>
             </View>
@@ -131,8 +169,7 @@ export default function RecentTransactions() {
                 },
               ]}
             >
-              {isIncome ? '+' : '-'} Rs.{' '}
-              {item.amount.toLocaleString('en-US')}
+              {isIncome ? '+' : '-'} Rs. {formatMoney(item.amount)}
             </Text>
           </View>
         );
@@ -145,6 +182,7 @@ const styles = StyleSheet.create({
   container: {
     marginTop: 10,
   },
+
   item: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -153,15 +191,18 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
+
   left: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     flex: 1,
   },
+
   details: {
     flex: 1,
   },
+
   iconBox: {
     width: 43,
     height: 43,
@@ -170,32 +211,38 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+
   title: {
     color: colors.textPrimary,
     fontSize: 13,
     fontWeight: '600',
   },
+
   subtitle: {
     color: colors.textMuted,
     fontSize: 10,
     marginTop: 5,
   },
+
   amount: {
     fontSize: 12,
     fontWeight: 'bold',
     marginLeft: 5,
   },
+
   emptyContainer: {
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 30,
     gap: 8,
   },
+
   emptyTitle: {
     color: colors.textPrimary,
     fontSize: 13,
     fontWeight: '600',
   },
+
   emptySubtitle: {
     color: colors.textMuted,
     fontSize: 11,

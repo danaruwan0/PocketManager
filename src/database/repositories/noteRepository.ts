@@ -45,14 +45,22 @@ export const updateNote = async (
   id: number,
   title: string,
   content: string,
+  isShoppingList = false,
 ): Promise<void> => {
   await initializeDatabase();
 
+  if (!title.trim()) {
+    throw new Error('Title is required.');
+  }
+
   await db.execute(
     `UPDATE notes
-     SET title = ?, content = ?, updated_at = CURRENT_TIMESTAMP
+     SET title = ?,
+         content = ?,
+         is_shopping_list = ?,
+         updated_at = CURRENT_TIMESTAMP
      WHERE id = ?`,
-    [title.trim(), content, id],
+    [title.trim(), content, isShoppingList ? 1 : 0, id],
   );
 };
 

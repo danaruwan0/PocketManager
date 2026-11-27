@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  LayoutAnimation,
   Platform,
   Pressable,
   ScrollView,
@@ -12,8 +13,13 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  UIManager,
   View,
 } from 'react-native';
+
+import DateTimePicker, {
+  DateTimePickerEvent,
+} from '@react-native-community/datetimepicker';
 
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -23,14 +29,18 @@ import {
   ArrowUpRight,
   CalendarDays,
   Check,
+  ChevronDown,
   FileText,
   Tag,
+  X,
 } from 'lucide-react-native';
 
 import colors from '../../theme/colors';
 
 import {
   addTransaction,
+  getTransactionById,
+  updateTransaction,
   TransactionType,
 } from '../../database/repositories/transactionRepository';
 
@@ -43,11 +53,23 @@ import {
 import { db, initializeDatabase } from '../../database/database';
 
 // =====================================================
+// ENABLE SMOOTH LAYOUT ANIMATION ON ANDROID
+// =====================================================
+
+if (
+  Platform.OS === 'android' &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+// =====================================================
 // PROPS
 // =====================================================
 
 interface AddTransactionProps {
   initialType: TransactionType;
+  transactionId?: number;
   onCancel: () => void;
   onSaved: () => void;
 }
@@ -66,16 +88,31 @@ const getToday = (): string => {
   return `${year}-${month}-${day}`;
 };
 
-const formatAmount = (value: string): string => {
-  const number = Number(value);
+const parseDate = (value: string): Date => {
+  const [year, month, day] = value.split('-').map(Number);
 
-  if (!Number.isFinite(number)) {
-    return '0.00';
+  return new Date(year, month - 1, day, 12, 0, 0);
+};
+
+const formatDateForDatabase = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
+};
+
+const formatDisplayDate = (value: string): string => {
+  const parsed = parseDate(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
   }
 
-  return number.toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+  return parsed.toLocaleDateString('en-LK', {
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric',
   });
 };
 
@@ -105,15 +142,22 @@ const getUserOccupation = async (): Promise<Occupation> => {
     : 'all';
 };
 
+// Supports both "Other" and "Other Income".
+const isOtherCategoryName = (name: string): boolean => {
+  return name.trim().toLowerCase().startsWith('other');
+};
+
 // =====================================================
 // COMPONENT
 // =====================================================
 
 export default function AddTransaction({
   initialType,
+  transactionId,
   onCancel,
   onSaved,
 }: AddTransactionProps) {
+
   const [type, setType] = useState<TransactionType>(initialType);
 
   const [title, setTitle] = useState('');
@@ -125,16 +169,51 @@ export default function AddTransaction({
   const [selectedCategory, setSelectedCategory] =
     useState<number | null>(null);
 
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+
   const [loadingCategories, setLoadingCategories] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const isIncome = type === 'income';
-  const accentColor = isIncome ? colors.success : colors.danger;
 
-  // ---------------------------------------------------
+  const accentColor = isIncome
+    ? colors.success
+    : colors.danger;
+
+  const selectedCategoryData = categories.find(
+    item => item.id === selectedCategory,
+  );
+
+  const isOtherCategory = selectedCategoryData
+    ? isOtherCategoryName(selectedCategoryData.name)
+    : false;
+
+  // ===================================================
+  // SMOOTH UI ANIMATION
+  // ===================================================
+
+  const animateLayout = () => {
+    LayoutAnimation.configureNext({
+      duration: 250,
+      create: {
+        type: LayoutAnimation.Types.easeInEaseOut,
+        property: LayoutAnimation.Properties.opacity,
+      },
+      update: {
+        type: LayoutAnimation.Types.easeInEaseOut,
+      },
+      delete: {
+        type: LayoutAnimation.Types.easeInEaseOut,
+        property: LayoutAnimation.Properties.opacity,
+      },
+    });
+  };
+
+  // ===================================================
   // LOAD CATEGORIES
-  // ---------------------------------------------------
+  // ===================================================
 
   const loadCategories = useCallback(async () => {
     try {
@@ -160,6 +239,7 @@ export default function AddTransaction({
             ? result[0].id
             : null;
       });
+
     } catch (err) {
       console.error('Category loading error:', err);
       setError('Unable to load categories. Please try again.');
@@ -172,98 +252,210 @@ export default function AddTransaction({
     loadCategories();
   }, [loadCategories]);
 
-  // ---------------------------------------------------
-  // CHANGE TRANSACTION TYPE
-  // ---------------------------------------------------
+  // ===================================================
+  // LOAD EXISTING TRANSACTION
+  // ===================================================
 
-  const handleTypeChange = (newType: TransactionType) => {
-    if (newType === type) {
+  useEffect(() => {
+    if (!transactionId) {
       return;
     }
 
+    let active = true;
+
+    const loadExisting = async () => {
+      try {
+        const item = await getTransactionById(transactionId);
+
+        if (!active) return;
+
+        if (!item) {
+          setError('Transaction could not be found.');
+          return;
+        }
+
+        setType(item.type);
+        setTitle(item.title);
+        setAmount(String(item.amount));
+        setDate(item.date);
+        setNote(item.note ?? '');
+        setSelectedCategory(item.category_id);
+
+      } catch (err) {
+        console.error('Transaction loading error:', err);
+
+        if (active) {
+          setError('Unable to load transaction.');
+        }
+      }
+    };
+
+    loadExisting();
+
+    return () => {
+      active = false;
+    };
+  }, [transactionId]);
+
+  // ===================================================
+  // CHANGE TRANSACTION TYPE
+  // ===================================================
+
+  const handleTypeChange = (newType: TransactionType) => {
+    if (newType === type || transactionId) {
+      return;
+    }
+
+    animateLayout();
+
     setType(newType);
     setSelectedCategory(null);
+    setTitle('');
+    setDropdownOpen(false);
     setError('');
   };
 
-  // ---------------------------------------------------
+  // ===================================================
+  // DROPDOWN OPEN / CLOSE
+  // ===================================================
+
+  const toggleDropdown = () => {
+    if (loadingCategories || categories.length === 0) {
+      return;
+    }
+
+    animateLayout();
+
+    setDropdownOpen(previous => !previous);
+    setError('');
+  };
+
+  // ===================================================
+  // CATEGORY SELECTION
+  // ===================================================
+
+  const handleCategorySelect = (category: Category) => {
+    // Close dropdown smoothly.
+    animateLayout();
+
+    setSelectedCategory(category.id);
+    setDropdownOpen(false);
+    setError('');
+
+    if (isOtherCategoryName(category.name)) {
+      // User must enter a custom transaction title.
+      setTitle('');
+    } else if (!title.trim()) {
+      // Helpful default for standard categories.
+      setTitle(category.name);
+    }
+  };
+
+  // ===================================================
   // AMOUNT INPUT
-  // ---------------------------------------------------
+  // ===================================================
 
   const handleAmountChange = (value: string) => {
-    // Allow only numbers and one decimal point.
     const cleaned = value.replace(/[^0-9.]/g, '');
 
     const parts = cleaned.split('.');
 
-    if (parts.length > 2) {
-      return;
-    }
-
-    if (parts[1] && parts[1].length > 2) {
-      return;
-    }
+    if (parts.length > 2) return;
+    if (parts[1] && parts[1].length > 2) return;
 
     setAmount(cleaned);
   };
 
-  // ---------------------------------------------------
+  // ===================================================
+  // DATE PICKER
+  // ===================================================
+
+  const handleDateChange = (
+    event: DateTimePickerEvent,
+    selectedDate?: Date,
+  ) => {
+    if (Platform.OS === 'android') {
+      setShowDatePicker(false);
+    }
+
+    if (event.type === 'dismissed' || !selectedDate) {
+      return;
+    }
+
+    setDate(formatDateForDatabase(selectedDate));
+  };
+
+  // ===================================================
   // SAVE TRANSACTION
-  // ---------------------------------------------------
+  // ===================================================
 
   const handleSave = async () => {
+    if (saving) return;
+
     setError('');
 
     const trimmedTitle = title.trim();
     const numericAmount = Number(amount);
 
-    if (!trimmedTitle) {
-      setError('Please enter a transaction title.');
+    if (!selectedCategory) {
+      setError('Please select a transaction category.');
       return;
     }
 
-    if (!amount || !Number.isFinite(numericAmount) || numericAmount <= 0) {
+    if (!trimmedTitle) {
+      setError(
+        isOtherCategory
+          ? 'Please enter your custom transaction name.'
+          : 'Please enter a transaction title.',
+      );
+      return;
+    }
+
+    if (
+      !amount ||
+      !Number.isFinite(numericAmount) ||
+      numericAmount <= 0
+    ) {
       setError('Please enter a valid amount greater than zero.');
       return;
     }
 
-    if (!selectedCategory) {
-      setError('Please select a category.');
-      return;
-    }
-
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      setError('Date must use YYYY-MM-DD format.');
-      return;
-    }
-
-    const [year, month, day] = date.split('-').map(Number);
-    const parsedDate = new Date(Date.UTC(year, month - 1, day));
+    const parsedDate = parseDate(date);
 
     if (
-      parsedDate.getUTCFullYear() !== year ||
-      parsedDate.getUTCMonth() !== month - 1 ||
-      parsedDate.getUTCDate() !== day
+      !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+      Number.isNaN(parsedDate.getTime()) ||
+      formatDateForDatabase(parsedDate) !== date
     ) {
-      setError('Please enter a valid calendar date.');
+      setError('Please select a valid transaction date.');
       return;
     }
 
     try {
       setSaving(true);
 
-      await addTransaction({
+      const transactionData = {
         title: trimmedTitle,
         amount: numericAmount,
         type,
         category_id: selectedCategory,
         date,
         note: note.trim() || undefined,
-      });
+      };
+
+      if (transactionId) {
+        await updateTransaction(transactionId, transactionData);
+      } else {
+        await addTransaction(transactionData);
+      }
 
       Alert.alert(
-        'Transaction Saved',
-        `${isIncome ? 'Income' : 'Expense'} has been saved successfully.`,
+        transactionId ? 'Transaction Updated' : 'Transaction Saved',
+
+        `${isIncome ? 'Income' : 'Expense'} has been ${
+          transactionId ? 'updated' : 'saved'
+        } successfully.`,
+
         [
           {
             text: 'OK',
@@ -271,23 +463,24 @@ export default function AddTransaction({
           },
         ],
       );
+
     } catch (err) {
       console.error('Save transaction error:', err);
 
-      const message =
+      setError(
         err instanceof Error
           ? err.message
-          : 'Something went wrong while saving.';
+          : 'Something went wrong while saving.',
+      );
 
-      setError(message);
     } finally {
       setSaving(false);
     }
   };
 
-  // ---------------------------------------------------
+  // ===================================================
   // UI
-  // ---------------------------------------------------
+  // ===================================================
 
   return (
     <SafeAreaView style={styles.container}>
@@ -302,6 +495,7 @@ export default function AddTransaction({
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
         >
+
           {/* HEADER */}
 
           <View style={styles.header}>
@@ -314,16 +508,16 @@ export default function AddTransaction({
 
             <View style={styles.headerText}>
               <Text style={styles.headerTitle}>
-                Add Transaction
+                {transactionId ? 'Edit Transaction' : 'Add Transaction'}
               </Text>
 
               <Text style={styles.headerSubtitle}>
-                Record your money movement
+                Manage your personal finances
               </Text>
             </View>
           </View>
 
-          {/* TYPE SELECTOR */}
+          {/* TRANSACTION TYPE */}
 
           <View style={styles.typeContainer}>
             <Pressable
@@ -380,7 +574,7 @@ export default function AddTransaction({
 
             <View style={styles.amountInputRow}>
               <Text style={[styles.currency, { color: accentColor }]}>
-                Rs.
+                LKR
               </Text>
 
               <TextInput
@@ -395,39 +589,17 @@ export default function AddTransaction({
             </View>
 
             <Text style={styles.amountHint}>
-              Enter the transaction amount in LKR
+              Enter amount in Sri Lankan Rupees
             </Text>
           </View>
 
-          {/* TITLE */}
+          {/* CATEGORY DROPDOWN */}
 
           <View style={styles.fieldContainer}>
-            <Text style={styles.label}>Transaction Title</Text>
 
-            <View style={styles.inputWrapper}>
-              <FileText size={19} color={colors.textSecondary} />
-
-              <TextInput
-                style={styles.input}
-                value={title}
-                onChangeText={setTitle}
-                placeholder={
-                  isIncome
-                    ? 'e.g. Monthly Salary'
-                    : 'e.g. Grocery Shopping'
-                }
-                placeholderTextColor={colors.textMuted}
-                maxLength={80}
-              />
-            </View>
-          </View>
-
-          {/* CATEGORY */}
-
-          <View style={styles.fieldContainer}>
             <View style={styles.labelRow}>
               <Tag size={17} color={colors.textSecondary} />
-              <Text style={styles.label}>Select Category</Text>
+              <Text style={styles.label}>Transaction Category</Text>
             </View>
 
             {loadingCategories ? (
@@ -439,70 +611,204 @@ export default function AddTransaction({
               </View>
             ) : categories.length === 0 ? (
               <Text style={styles.emptyText}>
-                No categories available for this transaction type.
+                No categories available.
               </Text>
             ) : (
-              <View style={styles.categoryList}>
-                {categories.map(category => {
-                  const selected =
-                    selectedCategory === category.id;
+              <>
+                {/* DROPDOWN TRIGGER */}
 
-                  return (
-                    <Pressable
-                      key={category.id}
-                      onPress={() => setSelectedCategory(category.id)}
-                      style={[
-                        styles.categoryChip,
-                        selected && {
-                          borderColor: accentColor,
-                          backgroundColor: isIncome
-                            ? '#16372D'
-                            : '#3A2028',
+                <Pressable
+                  onPress={toggleDropdown}
+                  style={[
+                    styles.dropdownButton,
+                    dropdownOpen && {
+                      borderColor: accentColor,
+                    },
+                  ]}
+                >
+                  <View style={styles.dropdownLeft}>
+                    <Tag size={19} color={accentColor} />
+
+                    <Text style={styles.dropdownText}>
+                      {selectedCategoryData?.name ?? 'Select Category'}
+                    </Text>
+                  </View>
+
+                  <ChevronDown
+                    size={20}
+                    color={colors.textSecondary}
+                    style={{
+                      transform: [
+                        {
+                          rotate: dropdownOpen ? '180deg' : '0deg',
                         },
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.categoryText,
-                          selected && { color: accentColor },
-                        ]}
-                      >
-                        {category.name}
-                      </Text>
+                      ],
+                    }}
+                  />
+                </Pressable>
 
-                      {selected && (
-                        <Check size={15} color={accentColor} />
-                      )}
-                    </Pressable>
-                  );
-                })}
-              </View>
+                {/* SMOOTH DROPDOWN CONTENT */}
+
+                {dropdownOpen && (
+                  <View style={styles.dropdownList}>
+                    <ScrollView
+                      nestedScrollEnabled
+                      keyboardShouldPersistTaps="handled"
+                      showsVerticalScrollIndicator
+                      style={styles.dropdownScroll}
+                    >
+                      {categories.map(category => {
+                        const selected =
+                          selectedCategory === category.id;
+
+                        return (
+                          <Pressable
+                            key={category.id}
+                            onPress={() => handleCategorySelect(category)}
+                            style={[
+                              styles.dropdownItem,
+                              selected && styles.dropdownItemSelected,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.dropdownItemText,
+                                selected && {
+                                  color: accentColor,
+                                  fontWeight: '700',
+                                },
+                              ]}
+                            >
+                              {category.name}
+                            </Text>
+
+                            {selected && (
+                              <Check
+                                size={18}
+                                color={accentColor}
+                              />
+                            )}
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                )}
+              </>
             )}
           </View>
 
-          {/* DATE */}
+          {/* TRANSACTION TITLE */}
 
           <View style={styles.fieldContainer}>
+
+            <View style={styles.labelRow}>
+              <FileText size={17} color={colors.textSecondary} />
+
+              <Text style={styles.label}>
+                {isOtherCategory
+                  ? 'Enter Your Transaction Name'
+                  : 'Transaction Title'}
+              </Text>
+            </View>
+
+            <View
+              style={[
+                styles.inputWrapper,
+                isOtherCategory && {
+                  borderColor: accentColor,
+                },
+              ]}
+            >
+              <FileText size={19} color={colors.textSecondary} />
+
+              <TextInput
+                style={styles.input}
+                value={title}
+                onChangeText={setTitle}
+                placeholder={
+                  isOtherCategory
+                    ? 'e.g. Pet Expenses, Birthday Gift...'
+                    : 'e.g. Monthly Salary, Grocery Shopping...'
+                }
+                placeholderTextColor={colors.textMuted}
+                maxLength={80}
+                returnKeyType="next"
+              />
+
+              {title.length > 0 && (
+                <Pressable onPress={() => setTitle('')}>
+                  <X size={17} color={colors.textMuted} />
+                </Pressable>
+              )}
+            </View>
+
+            {isOtherCategory && (
+              <Text style={styles.helperText}>
+                Enter your own name for this Other transaction.
+              </Text>
+            )}
+          </View>
+
+          {/* DATE PICKER */}
+
+          <View style={styles.fieldContainer}>
+
             <View style={styles.labelRow}>
               <CalendarDays size={17} color={colors.textSecondary} />
               <Text style={styles.label}>Transaction Date</Text>
             </View>
 
-            <View style={styles.inputWrapper}>
-              <TextInput
-                style={styles.input}
-                value={date}
-                onChangeText={setDate}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.textMuted}
-                keyboardType="numbers-and-punctuation"
-                maxLength={10}
-              />
-            </View>
+            <Pressable
+              onPress={() => {
+                animateLayout();
+                setDropdownOpen(false);
+                setShowDatePicker(true);
+              }}
+              style={styles.dateButton}
+            >
+              <View style={styles.dateLeft}>
+                <CalendarDays size={20} color={accentColor} />
 
-            <Text style={styles.helperText}>
-              Date format: YYYY-MM-DD
-            </Text>
+                <View>
+                  <Text style={styles.dateValue}>
+                    {formatDisplayDate(date)}
+                  </Text>
+
+                  <Text style={styles.dateSubtitle}>
+                    Select transaction date
+                  </Text>
+                </View>
+              </View>
+
+              <ChevronDown
+                size={19}
+                color={colors.textSecondary}
+              />
+            </Pressable>
+
+            {showDatePicker && (
+              <View style={styles.datePickerContainer}>
+                <DateTimePicker
+                  value={parseDate(date)}
+                  mode="date"
+                  display={
+                    Platform.OS === 'ios' ? 'spinner' : 'default'
+                  }
+                  onChange={handleDateChange}
+                  themeVariant="dark"
+                />
+
+                {Platform.OS === 'ios' && (
+                  <Pressable
+                    style={styles.dateDoneButton}
+                    onPress={() => setShowDatePicker(false)}
+                  >
+                    <Text style={styles.dateDoneText}>Done</Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
           </View>
 
           {/* NOTE */}
@@ -530,15 +836,21 @@ export default function AddTransaction({
             </View>
           )}
 
-          {/* SAVE */}
+          {/* SAVE BUTTON */}
 
           <Pressable
             onPress={handleSave}
-            disabled={saving || loadingCategories || categories.length === 0}
+            disabled={
+              saving ||
+              loadingCategories ||
+              categories.length === 0
+            }
             style={[
               styles.saveButton,
               { backgroundColor: accentColor },
-              (saving || loadingCategories || categories.length === 0) &&
+              (saving ||
+                loadingCategories ||
+                categories.length === 0) &&
                 styles.disabledButton,
             ]}
           >
@@ -547,8 +859,10 @@ export default function AddTransaction({
             ) : (
               <>
                 <Check size={19} color="#FFFFFF" />
+
                 <Text style={styles.saveButtonText}>
-                  Save {isIncome ? 'Income' : 'Expense'}
+                  {transactionId ? 'Update' : 'Save'}{' '}
+                  {isIncome ? 'Income' : 'Expense'}
                 </Text>
               </>
             )}
@@ -572,6 +886,7 @@ export default function AddTransaction({
 // =====================================================
 
 const styles = StyleSheet.create({
+
   flex: {
     flex: 1,
   },
@@ -703,7 +1018,6 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontSize: 14,
     fontWeight: '600',
-    marginBottom: 10,
   },
 
   labelRow: {
@@ -712,6 +1026,66 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 10,
   },
+
+  // CATEGORY DROPDOWN
+
+  dropdownButton: {
+    minHeight: 55,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    paddingHorizontal: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+
+  dropdownLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+
+  dropdownText: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
+  dropdownList: {
+    marginTop: 8,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+
+  dropdownScroll: {
+    maxHeight: 230,
+  },
+
+  dropdownItem: {
+    minHeight: 49,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+
+  dropdownItemSelected: {
+    backgroundColor: '#202E3D',
+  },
+
+  dropdownItemText: {
+    color: colors.textPrimary,
+    fontSize: 13,
+  },
+
+  // INPUTS
 
   inputWrapper: {
     minHeight: 54,
@@ -732,28 +1106,76 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
 
-  categoryList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 9,
+  helperText: {
+    color: colors.textMuted,
+    fontSize: 11,
+    marginTop: 8,
   },
 
-  categoryChip: {
-    minHeight: 40,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    paddingHorizontal: 13,
-    borderRadius: 12,
+  // DATE
+
+  dateButton: {
+    minHeight: 66,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
+    borderRadius: 14,
+    paddingHorizontal: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
 
-  categoryText: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    fontWeight: '500',
+  dateLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 13,
+  },
+
+  dateValue: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
+  dateSubtitle: {
+    color: colors.textMuted,
+    fontSize: 11,
+    marginTop: 4,
+  },
+
+  datePickerContainer: {
+    marginTop: 10,
+    backgroundColor: colors.surface,
+    borderRadius: 14,
+    padding: 10,
+    alignItems: 'center',
+  },
+
+  dateDoneButton: {
+    backgroundColor: colors.primary,
+    borderRadius: 10,
+    paddingHorizontal: 25,
+    paddingVertical: 11,
+    alignSelf: 'flex-end',
+    marginTop: 8,
+  },
+
+  dateDoneText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+
+  noteInput: {
+    minHeight: 100,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    padding: 14,
+    color: colors.textPrimary,
+    fontSize: 13,
   },
 
   loadingBox: {
@@ -776,23 +1198,6 @@ const styles = StyleSheet.create({
     padding: 14,
     backgroundColor: colors.surface,
     borderRadius: 12,
-  },
-
-  helperText: {
-    color: colors.textMuted,
-    fontSize: 11,
-    marginTop: 7,
-  },
-
-  noteInput: {
-    minHeight: 100,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 14,
-    padding: 14,
-    color: colors.textPrimary,
-    fontSize: 13,
   },
 
   errorBox: {
@@ -837,4 +1242,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+
 });

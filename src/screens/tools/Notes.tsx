@@ -64,8 +64,8 @@ export default function Notes({ navigation }: Props) {
     }
 
     try {
-      if (editingId) {
-        await updateNote(editingId, title, content);
+      if (editingId !== null) {
+        await updateNote(editingId, title, content, shopping);
       } else {
         await addNote(title, content, shopping);
       }
@@ -101,6 +101,14 @@ export default function Notes({ navigation }: Props) {
       },
     ]);
   };
+
+
+
+
+
+
+
+
 
   return (
     <SafeAreaView style={styles.container}>

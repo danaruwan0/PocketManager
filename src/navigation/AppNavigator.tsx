@@ -21,10 +21,13 @@ import Notes from '../screens/tools/Notes';
 import Schedule from '../screens/tools/Schedule';
 
 export type RootTabParamList = {
-  Home: undefined;
-  Transactions: undefined;
+  Home: {
+    refreshKey?: number;
+  } | undefined; Transactions: undefined;
+  
   AddTransaction: {
     type?: TransactionType;
+    transactionId?: number;
   } | undefined;
   Reports: undefined;
   Profile: undefined;

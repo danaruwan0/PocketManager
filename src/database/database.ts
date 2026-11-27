@@ -346,29 +346,6 @@ export const initializeDatabase = async (): Promise<void> => {
 
 
 
-  await db.execute(`
-  CREATE TABLE IF NOT EXISTS notes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    content TEXT NOT NULL DEFAULT '',
-    is_shopping_list INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-
-  await db.execute(`
-  CREATE TABLE IF NOT EXISTS schedules (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    description TEXT DEFAULT '',
-    event_date TEXT NOT NULL,
-    notification_id TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-
-
   if (initializationPromise) {
     return initializationPromise;
   }
@@ -376,6 +353,17 @@ export const initializeDatabase = async (): Promise<void> => {
   initializationPromise = (async () => {
     try {
       await db.execute('PRAGMA foreign_keys = ON');
+
+      await db.execute(`CREATE TABLE IF NOT EXISTS notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '', is_shopping_list INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`);
+      await db.execute(`CREATE TABLE IF NOT EXISTS schedules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
+        description TEXT DEFAULT '', event_date TEXT NOT NULL,
+        notification_id TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`);
 
       for (const sql of schema) {
         await db.execute(sql);
@@ -436,6 +424,169 @@ export const initializeDatabase = async (): Promise<void> => {
       if (version3 < 3) {
         await migrateToVersion3();
       }
+
+
+
+      // Version 4: keep older installations compatible with payment methods.
+      // This is additive only; existing transaction rows are preserved.
+      const currentTransactionColumns = await getColumns('transactions');
+      if (!currentTransactionColumns.includes('payment_method')) {
+        await db.execute("ALTER TABLE transactions ADD COLUMN payment_method TEXT DEFAULT 'cash'");
+      }
+      await db.execute("UPDATE transactions SET payment_method = 'cash' WHERE payment_method IS NULL OR TRIM(payment_method) = ''");
+      const version4Result = await db.execute('SELECT MAX(version) AS version FROM schema_migrations');
+      if (Number(version4Result.rows[0]?.version ?? 0) < 4) {
+        await db.execute('INSERT INTO schema_migrations (version) VALUES (4)');
+      }
+
+
+
+
+
+      // Version 5: Add personal finance categories
+      const version5Result = await db.execute(
+        'SELECT MAX(version) AS version FROM schema_migrations',
+      );
+
+      const version5 = Number(
+        version5Result.rows[0]?.version ?? 0,
+      );
+
+      if (version5 < 5) {
+        await db.execute('BEGIN TRANSACTION');
+
+        try {
+          // Make Education available to all users.
+          // Preserve the existing category ID if it is already in use.
+          await db.execute(
+            `UPDATE categories
+             SET occupation = 'all'
+             WHERE name = 'Education'
+               AND type = 'expense'
+               AND occupation = 'student'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM categories existing
+                 WHERE existing.name = 'Education'
+                   AND existing.type = 'expense'
+                   AND existing.occupation = 'all'
+               )`,
+          );
+
+          const newCategories = [
+            ['Education', 'expense', 'all'],
+            ['Miscellaneous', 'expense', 'all'],
+            ['Other', 'expense', 'all'],
+            ['Other', 'income', 'all'],
+          ];
+
+          for (const [name, type, occupation] of newCategories) {
+            await db.execute(
+              `INSERT OR IGNORE INTO categories
+                (name, type, occupation, is_custom)
+               VALUES (?, ?, ?, 0)`,
+              [name, type, occupation],
+            );
+          }
+
+          await db.execute(
+            'INSERT INTO schema_migrations (version) VALUES (5)',
+          );
+
+          await db.execute('COMMIT');
+        } catch (migrationError) {
+          await db.execute('ROLLBACK');
+          throw migrationError;
+        }
+      }
+
+
+
+      // --------------------------------------------------
+// MIGRATION VERSION 6
+// Professional Calendar & Schedule Reminders
+// --------------------------------------------------
+
+const version6Result = await db.execute(
+  'SELECT MAX(version) AS version FROM schema_migrations',
+);
+
+if (Number(version6Result.rows[0]?.version ?? 0) < 6) {
+  await db.execute('BEGIN TRANSACTION');
+
+  try {
+    const scheduleColumns = await getColumns('schedules');
+
+    const additions: Array<[string, string]> = [
+      ['start_time', "TEXT NOT NULL DEFAULT '09:00'"],
+      ['end_date', 'TEXT'],
+      ['end_time', 'TEXT'],
+      ['category', "TEXT NOT NULL DEFAULT 'personal'"],
+      ['priority', "TEXT NOT NULL DEFAULT 'medium'"],
+      ['repeat_type', "TEXT NOT NULL DEFAULT 'none'"],
+      ['reminder_enabled', 'INTEGER NOT NULL DEFAULT 1'],
+    ];
+
+    for (const [column, definition] of additions) {
+      if (!scheduleColumns.includes(column)) {
+        await db.execute(
+          `ALTER TABLE schedules ADD COLUMN ${column} ${definition}`,
+        );
+      }
+    }
+
+    // Convert old event date/time values safely.
+    await db.execute(`
+      UPDATE schedules SET
+        event_date = substr(event_date, 1, 10),
+        start_time = CASE
+          WHEN length(event_date) >= 16
+          THEN substr(event_date, 12, 5)
+          ELSE start_time
+        END
+      WHERE length(event_date) >= 10
+    `);
+
+    // Multiple reminders for one schedule.
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS schedule_reminders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        schedule_id INTEGER NOT NULL,
+        occurrence_date TEXT NOT NULL,
+        minutes_before INTEGER NOT NULL,
+        notification_id TEXT NOT NULL,
+        trigger_at INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+
+        FOREIGN KEY(schedule_id)
+          REFERENCES schedules(id)
+          ON DELETE CASCADE
+      )
+    `);
+
+    // Indexes for faster calendar queries.
+    await db.execute(`
+      CREATE INDEX IF NOT EXISTS idx_schedule_event_date
+      ON schedules(event_date)
+    `);
+
+    await db.execute(`
+      CREATE INDEX IF NOT EXISTS idx_schedule_reminders_schedule
+      ON schedule_reminders(schedule_id)
+    `);
+
+    await db.execute(
+      'INSERT INTO schema_migrations (version) VALUES (6)',
+    );
+
+    await db.execute('COMMIT');
+
+    console.log('Database migration v6 completed');
+  } catch (migrationError) {
+    await db.execute('ROLLBACK');
+    throw migrationError;
+  }
+}
 
 
 
